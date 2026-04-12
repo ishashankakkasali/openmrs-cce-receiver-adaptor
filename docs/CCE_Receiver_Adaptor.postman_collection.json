@@ -1,0 +1,220 @@
+{
+	"info": {
+		"_postman_id": "cce-receiver-adaptor-collection",
+		"name": "CCE Receiver Adaptor",
+		"description": "OpenMRS CCE Receiver Adaptor API — receives FHIR R4 payloads and routes them to OpenMRS via FHIR or REST endpoints based on CapabilityStatement discovery.\n\nBase URL: http://localhost:8083\n\n## Routing\n- **FHIR path**: Patient, Encounter, Observation, Condition, Location, Practitioner, Medication, AllergyIntolerance, Immunization, Task, Group, DiagnosticReport, Person\n- **REST fallback**: ServiceRequest → TestOrder, MedicationRequest → DrugOrder, RelatedPerson, OperationDefinition\n\n## OpenMRS-Specific Notes\n- **Patient**: Our adaptor auto-enriches with OpenMRS ID (Luhn Mod 30) + identifier location extension. No need to include these manually.\n- **Encounter**: Must NOT include `participant` array (causes ConstraintViolationException). Encounter datetime must be in the past.\n- **Observation**: `code.coding[0].code` must be an OpenMRS concept UUID (e.g. 5085AAAA... for Systolic). LOINC/SNOMED codes won't resolve unless the concept has a matching source mapping.\n- **ServiceRequest**: Requires `requester` (maps to orderer). Routed via REST as TestOrder.\n- **MedicationRequest**: Requires OpenMRS drug order configuration (order.drugDosingUnitsConceptUuid etc.) to be set. Not functional on unconfigured instances.\n- **Sub-elements**: FHIR element `id` fields must be present (UUID format) on array sub-elements like `name[]`, `identifier[]`, `address[]`, `telecom[]`. Our adaptor auto-adds these.\n\n## Test Reference Data (from demo OpenMRS)\n- Patient: b4b2e0a1-7ef8-4fea-acd7-19dd3c40a189\n- Encounter: 7eccfa30-7e6b-43a5-8e89-e8a4d423ecc8\n- Location: b1a8b05e-3542-4037-bbd3-998ee9c40574 (Inpatient Ward)\n- Provider: f9badd80-ab76-11e2-9e96-0800200c9a66 (Super User)\n- Encounter Type: e22e39fd-7db2-45e7-80f1-60fa0d5a4378 (Admission)\n- Concepts: 5085AAAA...AA (Systolic), 5089AAAA...AA (Weight), 5088AAAA...AA (Temperature)\n- Drug: 57232ace-ba38-4cc6-b817-ba4f55e645d5 (Aspirin 100mg)",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://localhost:8083",
+			"type": "string"
+		},
+		{
+			"key": "patientId",
+			"value": "b4b2e0a1-7ef8-4fea-acd7-19dd3c40a189",
+			"type": "string"
+		},
+		{
+			"key": "encounterId",
+			"value": "7eccfa30-7e6b-43a5-8e89-e8a4d423ecc8",
+			"type": "string"
+		},
+		{
+			"key": "locationId",
+			"value": "b1a8b05e-3542-4037-bbd3-998ee9c40574",
+			"type": "string"
+		},
+		{
+			"key": "providerId",
+			"value": "f9badd80-ab76-11e2-9e96-0800200c9a66",
+			"type": "string"
+		},
+		{
+			"key": "encounterTypeId",
+			"value": "e22e39fd-7db2-45e7-80f1-60fa0d5a4378",
+			"type": "string"
+		}
+	],
+	"item": [
+		{
+			"name": "FHIR Resource API",
+			"description": "Main inbound endpoint for receiving FHIR R4 payloads. Each request is routed to OpenMRS via FHIR or REST based on CapabilityStatement.",
+			"item": [
+				{
+					"name": "Create Patient",
+					"request": {
+						"method": "POST",
+						"header": [
+							{"key": "Content-Type", "value": "application/fhir+json"},
+							{"key": "Accept", "value": "application/json"},
+							{"key": "X-Correlation-ID", "value": "patient-{{$guid}}"},
+							{"key": "X-Source-System", "value": "spice"}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"resourceType\": \"Patient\",\n  \"name\": [\n    {\n      \"family\": \"Smith\",\n      \"given\": [\"John\", \"Robert\"]\n    }\n  ],\n  \"gender\": \"male\",\n  \"birthDate\": \"1990-05-15\",\n  \"telecom\": [\n    {\n      \"system\": \"phone\",\n      \"value\": \"+1-555-123-4567\",\n      \"use\": \"home\"\n    }\n  ],\n  \"address\": [\n    {\n      \"use\": \"home\",\n      \"city\": \"Springfield\",\n      \"state\": \"IL\",\n      \"postalCode\": \"62701\",\n      \"country\": \"US\"\n    }\n  ]\n}",
+							"options": {"raw": {"language": "json"}}
+						},
+						"url": {"raw": "{{baseUrl}}/api/v1/fhir", "host": ["{{baseUrl}}"], "path": ["api", "v1", "fhir"]},
+						"description": "Creates a Patient in OpenMRS via FHIR. The adaptor auto-enriches with:\n- OpenMRS ID (Luhn Mod 30 check digit)\n- Identifier location extension\n- UUID `id` fields on name/address/telecom/identifier sub-elements\n\nNo OpenMRS-specific fields needed in the request."
+					}
+				},
+				{
+					"name": "Create Encounter",
+					"request": {
+						"method": "POST",
+						"header": [
+							{"key": "Content-Type", "value": "application/fhir+json"},
+							{"key": "Accept", "value": "application/json"},
+							{"key": "X-Correlation-ID", "value": "encounter-{{$guid}}"},
+							{"key": "X-Source-System", "value": "spice"}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"resourceType\": \"Encounter\",\n  \"status\": \"unknown\",\n  \"class\": {\n    \"system\": \"http://terminology.hl7.org/CodeSystem/v3-ActCode\",\n    \"code\": \"AMB\",\n    \"display\": \"ambulatory\"\n  },\n  \"type\": [\n    {\n      \"coding\": [\n        {\n          \"system\": \"http://fhir.openmrs.org/code-system/encounter-type\",\n          \"code\": \"{{encounterTypeId}}\",\n          \"display\": \"Admission\"\n        }\n      ]\n    }\n  ],\n  \"subject\": {\n    \"reference\": \"Patient/{{patientId}}\",\n    \"type\": \"Patient\"\n  },\n  \"period\": {\n    \"start\": \"2025-01-15T10:00:00+05:30\"\n  },\n  \"location\": [\n    {\n      \"location\": {\n        \"reference\": \"Location/{{locationId}}\",\n        \"type\": \"Location\",\n        \"display\": \"Inpatient Ward\"\n      }\n    }\n  ]\n}",
+							"options": {"raw": {"language": "json"}}
+						},
+						"url": {"raw": "{{baseUrl}}/api/v1/fhir", "host": ["{{baseUrl}}"], "path": ["api", "v1", "fhir"]},
+						"description": "Creates an Encounter in OpenMRS via FHIR.\n\n**OpenMRS-specific requirements:**\n- `type[0].coding[0].code` must be a valid OpenMRS encounter type UUID\n- Do NOT include `participant` array (causes ConstraintViolationException in FHIR module v1.2.2)\n- `period.start` must be in the past (OpenMRS validates encounterDatetime < now)\n- `status` should be `unknown` (OpenMRS default)\n- `subject` must reference an existing Patient"
+					}
+				},
+				{
+					"name": "Create Observation",
+					"request": {
+						"method": "POST",
+						"header": [
+							{"key": "Content-Type", "value": "application/fhir+json"},
+							{"key": "Accept", "value": "application/json"},
+							{"key": "X-Correlation-ID", "value": "observation-{{$guid}}"},
+							{"key": "X-Source-System", "value": "spice"}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"resourceType\": \"Observation\",\n  \"status\": \"final\",\n  \"code\": {\n    \"coding\": [\n      {\n        \"code\": \"5085AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\n        \"display\": \"Systolic blood pressure\"\n      }\n    ]\n  },\n  \"subject\": {\n    \"reference\": \"Patient/{{patientId}}\"\n  },\n  \"encounter\": {\n    \"reference\": \"Encounter/{{encounterId}}\"\n  },\n  \"effectiveDateTime\": \"2025-01-15T10:30:00+05:30\",\n  \"valueQuantity\": {\n    \"value\": 120,\n    \"unit\": \"mmHg\",\n    \"system\": \"http://unitsofmeasure.org\",\n    \"code\": \"mm[Hg]\"\n  }\n}",
+							"options": {"raw": {"language": "json"}}
+						},
+						"url": {"raw": "{{baseUrl}}/api/v1/fhir", "host": ["{{baseUrl}}"], "path": ["api", "v1", "fhir"]},
+						"description": "Creates an Observation (vital sign) in OpenMRS via FHIR.\n\n**OpenMRS-specific requirements:**\n- `code.coding[0].code` MUST be an OpenMRS concept UUID (e.g. 5085AAAA...AA for Systolic). Standard LOINC codes (e.g. 8480-6) will NOT resolve to a concept and will fail with 'concept: Cannot be empty or null'.\n- `subject` must reference an existing Patient\n- `encounter` should reference an existing Encounter\n\n**Common concept UUIDs:**\n- Systolic: 5085AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n- Diastolic: 5086AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n- Temperature: 5088AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n- Weight (kg): 5089AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n- Height (cm): 5090AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+					}
+				},
+				{
+					"name": "Create ServiceRequest (Test Order)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{"key": "Content-Type", "value": "application/fhir+json"},
+							{"key": "Accept", "value": "application/json"},
+							{"key": "X-Correlation-ID", "value": "servicereq-{{$guid}}"},
+							{"key": "X-Source-System", "value": "spice"}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"resourceType\": \"ServiceRequest\",\n  \"status\": \"active\",\n  \"intent\": \"order\",\n  \"code\": {\n    \"coding\": [\n      {\n        \"code\": \"5085AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\n        \"display\": \"Systolic\"\n      }\n    ]\n  },\n  \"subject\": {\n    \"reference\": \"Patient/{{patientId}}\"\n  },\n  \"encounter\": {\n    \"reference\": \"Encounter/{{encounterId}}\"\n  },\n  \"requester\": {\n    \"reference\": \"Practitioner/{{providerId}}\"\n  },\n  \"priority\": \"routine\",\n  \"authoredOn\": \"2025-01-15T10:00:00+05:30\"\n}",
+							"options": {"raw": {"language": "json"}}
+						},
+						"url": {"raw": "{{baseUrl}}/api/v1/fhir", "host": ["{{baseUrl}}"], "path": ["api", "v1", "fhir"]},
+						"description": "Creates a ServiceRequest → TestOrder in OpenMRS via REST fallback.\n\n**OpenMRS-specific requirements:**\n- `requester` is REQUIRED — maps to `orderer` (provider UUID). Without it, OpenMRS returns a validation error (500 with serialization bug).\n- `code.coding[0].code` must be a valid OpenMRS concept UUID\n- `subject` and `encounter` must reference existing resources\n- Maps to REST endpoint: POST /ws/rest/v1/order with type=testorder\n- `careSetting` defaults to OUTPATIENT\n- `intent` maps to action: 'order'→NEW, 'revoke'→DISCONTINUE"
+					}
+				},
+				{
+					"name": "Create MedicationRequest (Drug Order)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{"key": "Content-Type", "value": "application/fhir+json"},
+							{"key": "Accept", "value": "application/json"},
+							{"key": "X-Correlation-ID", "value": "medrq-{{$guid}}"},
+							{"key": "X-Source-System", "value": "spice"}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"resourceType\": \"MedicationRequest\",\n  \"status\": \"active\",\n  \"intent\": \"order\",\n  \"medicationCodeableConcept\": {\n    \"coding\": [\n      {\n        \"code\": \"71617AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\n        \"display\": \"Aspirin\"\n      }\n    ]\n  },\n  \"subject\": {\n    \"reference\": \"Patient/{{patientId}}\"\n  },\n  \"encounter\": {\n    \"reference\": \"Encounter/{{encounterId}}\"\n  },\n  \"requester\": {\n    \"reference\": \"Practitioner/{{providerId}}\"\n  },\n  \"dosageInstruction\": [\n    {\n      \"doseAndRate\": [\n        {\n          \"doseQuantity\": {\n            \"value\": 100,\n            \"unit\": \"mg\"\n          }\n        }\n      ]\n    }\n  ],\n  \"dispenseRequest\": {\n    \"quantity\": {\n      \"value\": 30,\n      \"unit\": \"tablets\"\n    },\n    \"expectedSupplyDuration\": {\n      \"value\": 30,\n      \"unit\": \"days\"\n    }\n  }\n}",
+							"options": {"raw": {"language": "json"}}
+						},
+						"url": {"raw": "{{baseUrl}}/api/v1/fhir", "host": ["{{baseUrl}}"], "path": ["api", "v1", "fhir"]},
+						"description": "Creates a MedicationRequest → DrugOrder in OpenMRS via REST fallback.\n\n**⚠️ REQUIRES OpenMRS CONFIGURATION:**\nDrug orders require the following system settings to be configured in OpenMRS:\n- `order.drugDosingUnitsConceptUuid` — concept set with valid dose units (mg, tablet, etc.)\n- `order.drugDispensingUnitsConceptUuid` — concept set with valid dispensing units\n- `order.drugRoutesConceptUuid` — concept set with valid routes (oral, IV, etc.)\n- `order.durationUnitsConceptUuid` — concept set with valid duration units (days, weeks, etc.)\n\nWithout these configured, ALL drug order creations will fail with 500 (ValidationException masked by serialization bug).\n\n**Additional requirements:**\n- `requester` is REQUIRED (maps to orderer)\n- `medicationCodeableConcept.coding[0].code` must be an OpenMRS Drug-class concept UUID\n- A matching Drug entry must exist (or use `medicationReference`)\n- Maps to REST endpoint: POST /ws/rest/v1/order with type=drugorder"
+					}
+				},
+				{
+					"name": "Create Bundle (Patient + Encounter + Observation)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{"key": "Content-Type", "value": "application/fhir+json"},
+							{"key": "Accept", "value": "application/json"},
+							{"key": "X-Correlation-ID", "value": "bundle-{{$guid}}"},
+							{"key": "X-Source-System", "value": "spice"}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"resourceType\": \"Bundle\",\n  \"type\": \"transaction\",\n  \"entry\": [\n    {\n      \"resource\": {\n        \"resourceType\": \"Patient\",\n        \"name\": [{\"family\": \"BundlePatient\", \"given\": [\"Test\"]}],\n        \"gender\": \"female\",\n        \"birthDate\": \"1988-08-20\"\n      },\n      \"request\": {\n        \"method\": \"POST\",\n        \"url\": \"Patient\"\n      }\n    },\n    {\n      \"resource\": {\n        \"resourceType\": \"Encounter\",\n        \"status\": \"unknown\",\n        \"class\": {\"system\": \"http://terminology.hl7.org/CodeSystem/v3-ActCode\", \"code\": \"AMB\"},\n        \"type\": [{\"coding\": [{\"system\": \"http://fhir.openmrs.org/code-system/encounter-type\", \"code\": \"{{encounterTypeId}}\"}]}],\n        \"subject\": {\"reference\": \"Patient/{{patientId}}\"},\n        \"period\": {\"start\": \"2025-01-15T10:00:00+05:30\"},\n        \"location\": [{\"location\": {\"reference\": \"Location/{{locationId}}\"}}]\n      },\n      \"request\": {\n        \"method\": \"POST\",\n        \"url\": \"Encounter\"\n      }\n    },\n    {\n      \"resource\": {\n        \"resourceType\": \"Observation\",\n        \"status\": \"final\",\n        \"code\": {\"coding\": [{\"code\": \"5089AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\", \"display\": \"Weight (kg)\"}]},\n        \"subject\": {\"reference\": \"Patient/{{patientId}}\"},\n        \"encounter\": {\"reference\": \"Encounter/{{encounterId}}\"},\n        \"effectiveDateTime\": \"2025-01-15T10:30:00+05:30\",\n        \"valueQuantity\": {\"value\": 72.5, \"unit\": \"kg\", \"system\": \"http://unitsofmeasure.org\", \"code\": \"kg\"}\n      },\n      \"request\": {\n        \"method\": \"POST\",\n        \"url\": \"Observation\"\n      }\n    }\n  ]\n}",
+							"options": {"raw": {"language": "json"}}
+						},
+						"url": {"raw": "{{baseUrl}}/api/v1/fhir", "host": ["{{baseUrl}}"], "path": ["api", "v1", "fhir"]},
+						"description": "Sends a FHIR transaction Bundle containing Patient + Encounter + Observation. The adaptor splits the bundle into individual resources, sorts by dependency order (Patient → Encounter → Observation), and routes each independently.\n\n**Notes:**\n- Each entry is routed independently; failures in one don't roll back others\n- Resources are sorted by dependency order: Location → Practitioner → Patient → Encounter → Observation\n- Use `request.method` (POST/PUT/DELETE) per entry\n- Bundle cross-references (urn:uuid) are NOT resolved by the adaptor — use actual OpenMRS resource UUIDs"
+					}
+				}
+			]
+		},
+		{
+			"name": "Diagnostics",
+			"description": "Diagnostic endpoints for inspecting CapabilityStatement cache and routing table.",
+			"item": [
+				{
+					"name": "Get Capabilities",
+					"request": {
+						"method": "GET",
+						"header": [{"key": "Accept", "value": "application/json"}],
+						"url": {"raw": "{{baseUrl}}/api/v1/capabilities", "host": ["{{baseUrl}}"], "path": ["api", "v1", "capabilities"]},
+						"description": "Returns the cached CapabilityStatement from OpenMRS FHIR endpoint, listing all supported resource types and their operations (read, create, update, delete, search-type)."
+					}
+				},
+				{
+					"name": "Get Routing Table",
+					"request": {
+						"method": "GET",
+						"header": [{"key": "Accept", "value": "application/json"}],
+						"url": {"raw": "{{baseUrl}}/api/v1/routing-table", "host": ["{{baseUrl}}"], "path": ["api", "v1", "routing-table"]},
+						"description": "Returns the routing table showing which resource types are routed via FHIR vs REST, and which operations each supports."
+					}
+				}
+			]
+		},
+		{
+			"name": "Actuator",
+			"description": "Spring Boot Actuator endpoints for health checks, metrics, and monitoring.",
+			"item": [
+				{
+					"name": "Health Check",
+					"request": {
+						"method": "GET",
+						"url": {"raw": "{{baseUrl}}/actuator/health", "host": ["{{baseUrl}}"], "path": ["actuator", "health"]}
+					}
+				},
+				{
+					"name": "Application Info",
+					"request": {
+						"method": "GET",
+						"url": {"raw": "{{baseUrl}}/actuator/info", "host": ["{{baseUrl}}"], "path": ["actuator", "info"]}
+					}
+				},
+				{
+					"name": "Metrics Index",
+					"request": {
+						"method": "GET",
+						"url": {"raw": "{{baseUrl}}/actuator/metrics", "host": ["{{baseUrl}}"], "path": ["actuator", "metrics"]}
+					}
+				},
+				{
+					"name": "Prometheus Metrics",
+					"request": {
+						"method": "GET",
+						"url": {"raw": "{{baseUrl}}/actuator/prometheus", "host": ["{{baseUrl}}"], "path": ["actuator", "prometheus"]}
+					}
+				}
+			]
+		}
+	]
+}

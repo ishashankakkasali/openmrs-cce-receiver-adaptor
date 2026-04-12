@@ -1,0 +1,56 @@
+# Production profile — env-var driven config, structured JSON logging
+server:
+  port: ${SERVER_PORT:8083}
+
+# Inbound API Security — env-var driven
+cce:
+  security:
+    enabled: ${CCE_SECURITY_ENABLED:true}
+    username: ${CCE_AUTH_USERNAME:cce-client}
+    password: ${CCE_AUTH_PASSWORD}
+    oauth2:
+      issuer-uri: ${CCE_OAUTH2_ISSUER_URI:}
+      required-scope: ${CCE_OAUTH2_REQUIRED_SCOPE:}
+
+# Outbound OpenMRS connection — env-var driven
+openmrs:
+  fhir:
+    base-url: ${OPENMRS_FHIR_BASE_URL}
+    timeout: ${OPENMRS_FHIR_TIMEOUT:10000}
+  rest:
+    base-url: ${OPENMRS_REST_BASE_URL}
+    timeout: ${OPENMRS_REST_TIMEOUT:10000}
+  auth:
+    type: ${OPENMRS_AUTH_TYPE:basic}       # "basic" or "oauth2"
+    username: ${OPENMRS_USERNAME:}
+    password: ${OPENMRS_PASSWORD:}
+    oauth2:
+      token-url: ${OPENMRS_OAUTH2_TOKEN_URL:}
+      client-id: ${OPENMRS_OAUTH2_CLIENT_ID:}
+      client-secret: ${OPENMRS_OAUTH2_CLIENT_SECRET:}
+      scope: ${OPENMRS_OAUTH2_SCOPE:}
+  capability-refresh-ms: ${CAPABILITY_REFRESH_MS:21600000}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      show-details: never
+      probes:
+        enabled: true
+  health:
+    livenessState:
+      enabled: true
+    readinessState:
+      enabled: true
+  metrics:
+    tags:
+      application: cce-receiver-adaptor
+
+logging:
+  level:
+    org.openphc.cce: INFO
+    org.springframework.web: WARN

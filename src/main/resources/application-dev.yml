@@ -1,0 +1,43 @@
+# Development profile — local OpenMRS instance, DEBUG logging
+server:
+  port: 8083
+
+# Inbound API Security — disabled for dev
+cce:
+  security:
+    enabled: false
+
+openmrs:
+  fhir:
+    base-url: http://localhost:9095/openmrs/ws/fhir2/R4
+    timeout: 15000
+  rest:
+    base-url: http://localhost:9095/openmrs/ws/rest/v1
+    timeout: 15000
+  auth:
+    type: basic
+    username: admin
+    password: Admin123
+  capability-refresh-ms: 300000  # 5 minutes for dev
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
+  health:
+    livenessState:
+      enabled: true
+    readinessState:
+      enabled: true
+
+logging:
+  level:
+    org.openphc.cce: DEBUG
+    org.springframework.web: DEBUG
+    org.springframework.web.client: DEBUG

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+
+    <springProfile name="!prod">
+        <!-- Default/dev: human-readable console output with MDC fields -->
+        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <pattern>%d{ISO8601} [%thread] %-5level %logger{36} [%X{correlationId:-}] [%X{source:-}] [%X{resourceType:-}] - %msg%n</pattern>
+            </encoder>
+        </appender>
+
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+
+        <logger name="org.openphc.cce" level="DEBUG"/>
+    </springProfile>
+
+    <springProfile name="prod">
+        <!-- Production: structured JSON output -->
+        <appender name="JSON_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <pattern>{"timestamp":"%d{yyyy-MM-dd'T'HH:mm:ss.SSS'Z',UTC}","level":"%level","logger":"%logger","thread":"%thread","correlationId":"%X{correlationId:-}","source":"%X{source:-}","resourceType":"%X{resourceType:-}","message":"%replace(%msg){'\"','\\\"'}"}%n</pattern>
+            </encoder>
+        </appender>
+
+        <root level="INFO">
+            <appender-ref ref="JSON_CONSOLE"/>
+        </root>
+
+        <logger name="org.openphc.cce" level="INFO"/>
+    </springProfile>
+
+</configuration>

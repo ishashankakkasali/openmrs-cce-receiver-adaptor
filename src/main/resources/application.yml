@@ -1,0 +1,66 @@
+server:
+  port: 8083
+  servlet:
+    context-path: /
+
+spring:
+  application:
+    name: cce-receiver-adaptor
+
+# Inbound API Security (disabled by default; enable for production)
+cce:
+  security:
+    enabled: false                 # Set to true to require auth on adaptor endpoints
+    username: cce-client
+    password: changeme
+    oauth2:
+      issuer-uri:                  # Leave blank to disable inbound OAuth2 JWT
+      # Example: http://keycloak:8180/realms/openmrs
+      required-scope:
+
+# OpenMRS Configuration
+openmrs:
+  fhir:
+    base-url: http://localhost:9096/openmrs/ws/fhir2/R4
+    timeout: 10000
+  rest:
+    base-url: http://localhost:9096/openmrs/ws/rest/v1
+    timeout: 10000
+  auth:
+    type: basic                    # "basic" or "oauth2" — how adaptor authenticates to OpenMRS
+    username: admin
+    password: Admin123
+    oauth2:                        # Used when type=oauth2 (Client Credentials grant)
+      token-url:                   # e.g. http://keycloak:8180/realms/openmrs/protocol/openid-connect/token
+      client-id:
+      client-secret:
+      scope:
+  capability-refresh-ms: 21600000  # 6 hours
+
+# Actuator & Metrics
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
+  health:
+    livenessState:
+      enabled: true
+    readinessState:
+      enabled: true
+  metrics:
+    tags:
+      application: cce-receiver-adaptor
+
+# Logging
+logging:
+  level:
+    org.openphc.cce: DEBUG
+    org.springframework.web: INFO
+  pattern:
+    console: "%d{ISO8601} [%thread] %-5level %logger{36} [%X{correlationId:-}] [%X{source:-}] [%X{resourceType:-}] - %msg%n"

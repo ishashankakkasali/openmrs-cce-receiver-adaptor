@@ -1,0 +1,1053 @@
+{
+  "info": {
+    "name": "CCE NCD Referral — E2E (SPICE → Adaptor → O3)",
+    "description": "End-to-end NCD referral workflow: Patient registration → NCD screening → Lab referral → Lab results → Task completion.\n\nAll requests go through the CCE Receiver Adaptor at localhost:8083, which enriches and routes them to OpenMRS O3.\n\n**Run requests in order** — each step depends on UUIDs from previous steps.\n\nAfter each step, copy the returned `resourceId` into the collection variables.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "adaptor_base_url",
+      "value": "http://localhost:8083/api/v1/fhir",
+      "type": "string"
+    },
+    {
+      "key": "openmrs_fhir_url",
+      "value": "http://localhost:9096/openmrs/ws/fhir2/R4",
+      "type": "string"
+    },
+    {
+      "key": "openmrs_rest_url",
+      "value": "http://localhost:9096/openmrs/ws/rest/v1",
+      "type": "string"
+    },
+    {
+      "key": "openmrs_user",
+      "value": "admin",
+      "type": "string"
+    },
+    {
+      "key": "openmrs_pass",
+      "value": "Admin123",
+      "type": "string"
+    },
+    {
+      "key": "patient_uuid",
+      "value": "26922e36-e154-4648-b168-f65999a54c69",
+      "type": "string"
+    },
+    {
+      "key": "ncd_encounter_uuid",
+      "value": "1c804497-689b-4dc0-a029-d1134c2acc0e",
+      "type": "string"
+    },
+    {
+      "key": "systolic_obs_uuid",
+      "value": "dcb85b5e-5407-4d00-b306-66c8a543dead",
+      "type": "string"
+    },
+    {
+      "key": "diastolic_obs_uuid",
+      "value": "52265681-2539-4f49-b4b7-ffb4dd1d9353",
+      "type": "string"
+    },
+    {
+      "key": "glucose_obs_uuid",
+      "value": "a8a572b0-8d8f-458d-989d-315591bf6f42",
+      "type": "string"
+    },
+    {
+      "key": "condition_uuid",
+      "value": "93a76e1e-74ac-4c0b-98a3-11ed830f7ef2",
+      "type": "string"
+    },
+    {
+      "key": "service_request_uuid",
+      "value": "fbcdcabf-940d-40d2-b1bc-9d6b4d4e681f",
+      "type": "string"
+    },
+    {
+      "key": "task_uuid",
+      "value": "af47af61-32a8-4609-953e-8ca3c132a3a6",
+      "type": "string"
+    },
+    {
+      "key": "lab_encounter_uuid",
+      "value": "428b68dd-2da0-440b-b9e8-5ace28c541b1",
+      "type": "string"
+    },
+    {
+      "key": "hba1c_obs_uuid",
+      "value": "1b07d1da-0423-4cc9-acf7-e0eaefcd7576",
+      "type": "string"
+    },
+    {
+      "key": "diagnostic_report_uuid",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "auth": {
+    "type": "noauth"
+  },
+  "item": [
+    {
+      "name": "0. Health Checks",
+      "item": [
+        {
+          "name": "0a. CCE Adaptor Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:8083/actuator/health",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8083",
+              "path": ["actuator", "health"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Adaptor is UP', function () {",
+                  "    var json = pm.response.json();",
+                  "    pm.expect(json.status).to.eql('UP');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "0b. OpenMRS O3 Health",
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": [
+                { "key": "username", "value": "{{openmrs_user}}" },
+                { "key": "password", "value": "{{openmrs_pass}}" }
+              ]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{openmrs_fhir_url}}/metadata",
+              "host": ["{{openmrs_fhir_url}}"],
+              "path": ["metadata"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('O3 FHIR endpoint is reachable', function () {",
+                  "    pm.expect(pm.response.code).to.eql(200);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "0c. Adaptor Routing Table",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:8083/api/v1/routing-table",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8083",
+              "path": ["api", "v1", "routing-table"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "1. Register Patient (SPICE → Adaptor)",
+      "item": [
+        {
+          "name": "1a. Create Patient",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var json = pm.response.json();",
+                  "var result = json.results[0];",
+                  "",
+                  "pm.test('Patient created successfully', function () {",
+                  "    pm.expect(result.status).to.be.oneOf(['created', 'updated']);",
+                  "    pm.expect(result.resourceId).to.not.be.null;",
+                  "});",
+                  "",
+                  "if (result.resourceId) {",
+                  "    pm.collectionVariables.set('patient_uuid', result.resourceId);",
+                  "    console.log('Patient UUID: ' + result.resourceId);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/fhir+json" },
+              { "key": "X-Source-System", "value": "spice" },
+              { "key": "X-Correlation-ID", "value": "ncd-referral-demo-001" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"resourceType\": \"Patient\",\n  \"name\": [\n    {\n      \"use\": \"official\",\n      \"family\": \"MUGISHA\",\n      \"given\": [\"JEAN\", \"PAUL\"]\n    }\n  ],\n  \"gender\": \"male\",\n  \"birthDate\": \"1985-03-15\",\n  \"identifier\": [\n    {\n      \"system\": \"NID\",\n      \"value\": \"1198503150001234\"\n    },\n    {\n      \"system\": \"UPI\",\n      \"value\": \"040505-0001-1234\"\n    }\n  ],\n  \"address\": [\n    {\n      \"use\": \"home\",\n      \"city\": \"Kigali\",\n      \"district\": \"Gasabo\",\n      \"country\": \"Rwanda\"\n    }\n  ],\n  \"telecom\": [\n    {\n      \"system\": \"phone\",\n      \"value\": \"+250788123456\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{adaptor_base_url}}",
+              "host": ["{{adaptor_base_url}}"]
+            },
+            "description": "Register a new patient from SPICE. The adaptor will:\n- Generate an OpenMRS ID with LuhnMod30 check digit\n- Promote NID and UPI identifiers with type.text\n- Add location extension to identifiers\n- Add UUID ids to all sub-elements"
+          }
+        },
+        {
+          "name": "1b. Verify Patient in O3",
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": [
+                { "key": "username", "value": "{{openmrs_user}}" },
+                { "key": "password", "value": "{{openmrs_pass}}" }
+              ]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{openmrs_fhir_url}}/Patient/{{patient_uuid}}",
+              "host": ["{{openmrs_fhir_url}}"],
+              "path": ["Patient", "{{patient_uuid}}"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Patient exists in O3', function () {",
+                  "    pm.expect(pm.response.code).to.eql(200);",
+                  "    var patient = pm.response.json();",
+                  "    pm.expect(patient.resourceType).to.eql('Patient');",
+                  "    console.log('Patient: ' + patient.name[0].family + ' ' + patient.name[0].given.join(' '));",
+                  "    patient.identifier.forEach(function(id) {",
+                  "        console.log('  ID: ' + (id.type ? id.type.text : 'unknown') + ' = ' + id.value);",
+                  "    });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. NCD Screening Encounter (SPICE → Adaptor)",
+      "item": [
+        {
+          "name": "2a. Create NCD Encounter",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var json = pm.response.json();",
+                  "var result = json.results[0];",
+                  "",
+                  "pm.test('Encounter created', function () {",
+                  "    pm.expect(result.status).to.eql('created');",
+                  "    pm.expect(result.resourceId).to.not.be.null;",
+                  "});",
+                  "",
+                  "if (result.resourceId) {",
+                  "    pm.collectionVariables.set('ncd_encounter_uuid', result.resourceId);",
+                  "    console.log('NCD Encounter UUID: ' + result.resourceId);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/fhir+json" },
+              { "key": "X-Source-System", "value": "spice" },
+              { "key": "X-Correlation-ID", "value": "ncd-referral-demo-001" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"resourceType\": \"Encounter\",\n  \"meta\": {\n    \"tag\": [{\"system\": \"http://fhir.openmrs.org/ext/encounter-tag\", \"code\": \"encounter\", \"display\": \"Encounter\"}]\n  },\n  \"status\": \"finished\",\n  \"class\": {\n    \"system\": \"http://terminology.hl7.org/CodeSystem/v3-ActCode\",\n    \"code\": \"AMB\",\n    \"display\": \"Ambulatory\"\n  },\n  \"type\": [{\n    \"coding\": [{\n      \"system\": \"http://fhir.openmrs.org/code-system/encounter-type\",\n      \"code\": \"d7151f82-c1f3-4152-a605-2f9ea7414a79\",\n      \"display\": \"Visit Note\"\n    }]\n  }],\n  \"subject\": {\n    \"reference\": \"Patient/{{patient_uuid}}\",\n    \"type\": \"Patient\"\n  },\n  \"period\": {\n    \"start\": \"2026-04-05T09:00:00+02:00\"\n  },\n  \"location\": [{\n    \"location\": {\n      \"reference\": \"Location/44c3efb0-2583-4c80-a79e-1f756a03c0a1\",\n      \"display\": \"Outpatient Clinic\"\n    }\n  }],\n  \"participant\": [{\n    \"individual\": {\n      \"reference\": \"Practitioner/1fee2f21-82f3-4aab-8d87-f1cf19034649\",\n      \"display\": \"Jane Nurse\"\n    }\n  }]\n}"
+            },
+            "url": {
+              "raw": "{{adaptor_base_url}}",
+              "host": ["{{adaptor_base_url}}"]
+            },
+            "description": "Create the NCD screening encounter at Outpatient Clinic. The adaptor will:\n- Resolve encounter type by UUID\n- Auto-fill period if missing\n- Add UUID ids to sub-elements (location, participant, type)"
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. NCD Observations — Vitals & Lab (SPICE → Adaptor)",
+      "item": [
+        {
+          "name": "3a. Systolic Blood Pressure (155 mmHg)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var json = pm.response.json();",
+                  "var result = json.results[0];",
+                  "",
+                  "pm.test('Systolic BP created', function () {",
+                  "    pm.expect(result.status).to.eql('created');",
+                  "});",
+                  "",
+                  "if (result.resourceId) {",
+                  "    pm.collectionVariables.set('systolic_obs_uuid', result.resourceId);",
+                  "    console.log('Systolic BP Obs UUID: ' + result.resourceId);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/fhir+json" },
+              { "key": "X-Source-System", "value": "spice" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"resourceType\": \"Observation\",\n  \"status\": \"final\",\n  \"code\": {\n    \"coding\": [{\n      \"system\": \"http://ciel.org\",\n      \"code\": \"5085AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\n      \"display\": \"Systolic blood pressure\"\n    }]\n  },\n  \"subject\": {\n    \"reference\": \"Patient/{{patient_uuid}}\"\n  },\n  \"encounter\": {\n    \"reference\": \"Encounter/{{ncd_encounter_uuid}}\"\n  },\n  \"effectiveDateTime\": \"2026-04-05T09:15:00+02:00\",\n  \"valueQuantity\": {\n    \"value\": 155,\n    \"unit\": \"mmHg\",\n    \"system\": \"http://unitsofmeasure.org\",\n    \"code\": \"mm[Hg]\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{adaptor_base_url}}",
+              "host": ["{{adaptor_base_url}}"]
+            },
+            "description": "Systolic BP = 155 mmHg (elevated). Uses CIEL concept 5085. The adaptor resolves the concept code to OpenMRS UUID."
+          }
+        },
+        {
+          "name": "3b. Diastolic Blood Pressure (95 mmHg)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var json = pm.response.json();",
+                  "var result = json.results[0];",
+                  "",
+                  "pm.test('Diastolic BP created', function () {",
+                  "    pm.expect(result.status).to.eql('created');",
+                  "});",
+                  "",
+                  "if (result.resourceId) {",
+                  "    pm.collectionVariables.set('diastolic_obs_uuid', result.resourceId);",
+                  "    console.log('Diastolic BP Obs UUID: ' + result.resourceId);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/fhir+json" },
+              { "key": "X-Source-System", "value": "spice" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"resourceType\": \"Observation\",\n  \"status\": \"final\",\n  \"code\": {\n    \"coding\": [{\n      \"system\": \"http://ciel.org\",\n      \"code\": \"5086AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\n      \"display\": \"Diastolic blood pressure\"\n    }]\n  },\n  \"subject\": {\n    \"reference\": \"Patient/{{patient_uuid}}\"\n  },\n  \"encounter\": {\n    \"reference\": \"Encounter/{{ncd_encounter_uuid}}\"\n  },\n  \"effectiveDateTime\": \"2026-04-05T09:15:00+02:00\",\n  \"valueQuantity\": {\n    \"value\": 95,\n    \"unit\": \"mmHg\",\n    \"system\": \"http://unitsofmeasure.org\",\n    \"code\": \"mm[Hg]\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{adaptor_base_url}}",
+              "host": ["{{adaptor_base_url}}"]
+            },
+            "description": "Diastolic BP = 95 mmHg. Uses CIEL concept 5086."
+          }
+        },
+        {
+          "name": "3c. Fasting Blood Glucose (310 mg/dL — HIGH)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var json = pm.response.json();",
+                  "var result = json.results[0];",
+                  "",
+                  "pm.test('Fasting Glucose created', function () {",
+                  "    pm.expect(result.status).to.eql('created');",
+                  "});",
+                  "",
+                  "if (result.resourceId) {",
+                  "    pm.collectionVariables.set('glucose_obs_uuid', result.resourceId);",
+                  "    console.log('Glucose Obs UUID: ' + result.resourceId);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/fhir+json" },
+              { "key": "X-Source-System", "value": "spice" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"resourceType\": \"Observation\",\n  \"status\": \"final\",\n  \"code\": {\n    \"coding\": [{\n      \"system\": \"http://loinc.org\",\n      \"code\": \"1558-6\",\n      \"display\": \"Fasting glucose\"\n    }]\n  },\n  \"subject\": {\n    \"reference\": \"Patient/{{patient_uuid}}\"\n  },\n  \"encounter\": {\n    \"reference\": \"Encounter/{{ncd_encounter_uuid}}\"\n  },\n  \"effectiveDateTime\": \"2026-04-05T09:20:00+02:00\",\n  \"valueQuantity\": {\n    \"value\": 310,\n    \"unit\": \"mg/dL\",\n    \"system\": \"http://unitsofmeasure.org\",\n    \"code\": \"mg/dL\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{adaptor_base_url}}",
+              "host": ["{{adaptor_base_url}}"]
+            },
+            "description": "Fasting glucose = 310 mg/dL (dangerously high, triggers referral). Uses LOINC 1558-6 → adaptor resolves to CIEL 160912."
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Diagnosis — Type 2 Diabetes (SPICE → Adaptor)",
+      "item": [
+        {
+          "name": "4a. Create Condition (T2DM)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var json = pm.response.json();",
+                  "var result = json.results[0];",
+                  "",
+                  "pm.test('Condition created', function () {",
+                  "    pm.expect(result.status).to.eql('created');",
+                  "});",
+                  "",
+                  "if (result.resourceId) {",
+                  "    pm.collectionVariables.set('condition_uuid', result.resourceId);",
+                  "    console.log('Condition UUID: ' + result.resourceId);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/fhir+json" },
+              { "key": "X-Source-System", "value": "spice" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"resourceType\": \"Condition\",\n  \"clinicalStatus\": {\n    \"coding\": [{\n      \"system\": \"http://terminology.hl7.org/CodeSystem/condition-clinical\",\n      \"code\": \"active\"\n    }]\n  },\n  \"verificationStatus\": {\n    \"coding\": [{\n      \"system\": \"http://terminology.hl7.org/CodeSystem/condition-ver-status\",\n      \"code\": \"confirmed\"\n    }]\n  },\n  \"code\": {\n    \"coding\": [{\n      \"system\": \"http://ciel.org\",\n      \"code\": \"142473AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\n      \"display\": \"Diabetes mellitus, type 2\"\n    }]\n  },\n  \"subject\": {\n    \"reference\": \"Patient/{{patient_uuid}}\"\n  },\n  \"encounter\": {\n    \"reference\": \"Encounter/{{ncd_encounter_uuid}}\"\n  },\n  \"onsetDateTime\": \"2026-04-05T09:00:00+02:00\",\n  \"recorder\": {\n    \"reference\": \"Practitioner/1fee2f21-82f3-4aab-8d87-f1cf19034649\",\n    \"display\": \"Jane Nurse\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{adaptor_base_url}}",
+              "host": ["{{adaptor_base_url}}"]
+            },
+            "description": "Diagnosis: Type 2 Diabetes Mellitus (CIEL 142473). The adaptor resolves the concept code and auto-fills recordedDate if missing."
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Lab Referral — ServiceRequest + Task (SPICE → Adaptor)",
+      "item": [
+        {
+          "name": "5a. Create ServiceRequest (HbA1c Lab Order)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var json = pm.response.json();",
+                  "var result = json.results[0];",
+                  "",
+                  "pm.test('ServiceRequest created via REST', function () {",
+                  "    pm.expect(result.status).to.be.oneOf(['created', 'updated']);",
+                  "    pm.expect(result.route).to.eql('rest');",
+                  "});",
+                  "",
+                  "if (result.resourceId) {",
+                  "    pm.collectionVariables.set('service_request_uuid', result.resourceId);",
+                  "    console.log('ServiceRequest UUID: ' + result.resourceId);",
+                  "    console.log('Route: ' + result.route + ' (REST because O3 FHIR is read-only for ServiceRequest)');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/fhir+json" },
+              { "key": "X-Source-System", "value": "spice" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"resourceType\": \"ServiceRequest\",\n  \"status\": \"active\",\n  \"intent\": \"order\",\n  \"priority\": \"urgent\",\n  \"code\": {\n    \"coding\": [{\n      \"code\": \"159644AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\n      \"display\": \"Glycosylated hemoglobin A measurement (HbA1c)\"\n    }]\n  },\n  \"subject\": {\n    \"reference\": \"Patient/{{patient_uuid}}\",\n    \"display\": \"MUGISHA JEAN PAUL\"\n  },\n  \"encounter\": {\n    \"reference\": \"Encounter/{{ncd_encounter_uuid}}\"\n  },\n  \"requester\": {\n    \"reference\": \"Practitioner/1fee2f21-82f3-4aab-8d87-f1cf19034649\",\n    \"display\": \"Jane Nurse\"\n  },\n  \"note\": [{\n    \"text\": \"Fasting glucose 310 mg/dL. Urgent HbA1c needed to confirm uncontrolled diabetes.\"\n  }]\n}"
+            },
+            "url": {
+              "raw": "{{adaptor_base_url}}",
+              "host": ["{{adaptor_base_url}}"]
+            },
+            "description": "HbA1c lab order. The adaptor routes this via REST API (POST /order as TestOrder) because O3's FHIR endpoint only supports read/search for ServiceRequest.\n\nFhirToRestTransformer maps:\n- code.coding[0].code → concept\n- encounter.reference → encounter UUID\n- subject.reference → patient UUID\n- requester.reference → orderer UUID\n- priority → urgency (urgent → STAT)\n- careSetting → OUTPATIENT (hardcoded)\n- type → testorder (hardcoded)"
+          }
+        },
+        {
+          "name": "5b. Verify ServiceRequest in O3",
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": [
+                { "key": "username", "value": "{{openmrs_user}}" },
+                { "key": "password", "value": "{{openmrs_pass}}" }
+              ]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{openmrs_fhir_url}}/ServiceRequest?patient={{patient_uuid}}&_sort=-_lastUpdated&_count=1",
+              "host": ["{{openmrs_fhir_url}}"],
+              "path": ["ServiceRequest"],
+              "query": [
+                { "key": "patient", "value": "{{patient_uuid}}" },
+                { "key": "_sort", "value": "-_lastUpdated" },
+                { "key": "_count", "value": "1" }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('ServiceRequest found in O3', function () {",
+                  "    var json = pm.response.json();",
+                  "    pm.expect(json.total).to.be.above(0);",
+                  "    var sr = json.entry[0].resource;",
+                  "    console.log('ServiceRequest: ' + sr.id + ' | status: ' + sr.status + ' | intent: ' + sr.intent);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "5c. Create Task (Referral Tracking)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var json = pm.response.json();",
+                  "var result = json.results[0];",
+                  "",
+                  "pm.test('Task created via FHIR', function () {",
+                  "    pm.expect(result.status).to.eql('created');",
+                  "    pm.expect(result.route).to.eql('fhir');",
+                  "});",
+                  "",
+                  "if (result.resourceId) {",
+                  "    pm.collectionVariables.set('task_uuid', result.resourceId);",
+                  "    console.log('Task UUID: ' + result.resourceId);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/fhir+json" },
+              { "key": "X-Source-System", "value": "spice" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"resourceType\": \"Task\",\n  \"status\": \"requested\",\n  \"intent\": \"order\",\n  \"priority\": \"urgent\",\n  \"code\": {\n    \"text\": \"HbA1c Lab Referral\"\n  },\n  \"description\": \"Refer to Inpatient Ward lab for HbA1c test. Fasting glucose 310 mg/dL. Suspected uncontrolled Type 2 DM.\",\n  \"for\": {\n    \"reference\": \"Patient/{{patient_uuid}}\",\n    \"display\": \"MUGISHA JEAN PAUL\"\n  },\n  \"basedOn\": [{\n    \"reference\": \"ServiceRequest/{{service_request_uuid}}\",\n    \"type\": \"ServiceRequest\"\n  }],\n  \"encounter\": {\n    \"reference\": \"Encounter/{{ncd_encounter_uuid}}\"\n  },\n  \"requester\": {\n    \"reference\": \"Practitioner/1fee2f21-82f3-4aab-8d87-f1cf19034649\",\n    \"display\": \"Jane Nurse\"\n  },\n  \"owner\": {\n    \"reference\": \"Practitioner/92416875-5fe2-4d3b-8531-e2c8c846a69d\",\n    \"display\": \"June Technician\"\n  },\n  \"authoredOn\": \"2026-04-05T10:00:00+02:00\"\n}"
+            },
+            "url": {
+              "raw": "{{adaptor_base_url}}",
+              "host": ["{{adaptor_base_url}}"]
+            },
+            "description": "Task to track the referral. Links to ServiceRequest via basedOn. Assigned to June Technician (lab tech at Inpatient Ward). O3 supports full CRUD on Task via FHIR."
+          }
+        },
+        {
+          "name": "5d. Verify Task in O3",
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": [
+                { "key": "username", "value": "{{openmrs_user}}" },
+                { "key": "password", "value": "{{openmrs_pass}}" }
+              ]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{openmrs_fhir_url}}/Task/{{task_uuid}}",
+              "host": ["{{openmrs_fhir_url}}"],
+              "path": ["Task", "{{task_uuid}}"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Task exists and status is requested', function () {",
+                  "    var task = pm.response.json();",
+                  "    pm.expect(task.status).to.eql('requested');",
+                  "    console.log('Task: ' + task.id + ' | status: ' + task.status);",
+                  "    console.log('basedOn: ' + task.basedOn[0].reference);",
+                  "    console.log('owner: ' + task.owner.display);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "6. Lab Accepts Task (Direct O3 FHIR)",
+      "item": [
+        {
+          "name": "6a. Update Task → accepted",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Task updated to accepted', function () {",
+                  "    var task = pm.response.json();",
+                  "    pm.expect(task.status).to.eql('accepted');",
+                  "    console.log('Task status: ' + task.status);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": [
+                { "key": "username", "value": "{{openmrs_user}}" },
+                { "key": "password", "value": "{{openmrs_pass}}" }
+              ]
+            },
+            "method": "PUT",
+            "header": [
+              { "key": "Content-Type", "value": "application/fhir+json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"resourceType\": \"Task\",\n  \"id\": \"{{task_uuid}}\",\n  \"status\": \"accepted\",\n  \"intent\": \"order\",\n  \"basedOn\": [{\n    \"reference\": \"ServiceRequest/{{service_request_uuid}}\",\n    \"type\": \"ServiceRequest\"\n  }],\n  \"for\": {\n    \"reference\": \"Patient/{{patient_uuid}}\",\n    \"display\": \"MUGISHA JEAN PAUL\"\n  },\n  \"owner\": {\n    \"reference\": \"Practitioner/92416875-5fe2-4d3b-8531-e2c8c846a69d\",\n    \"display\": \"June Technician\"\n  },\n  \"authoredOn\": \"2026-04-05T10:00:00+02:00\",\n  \"lastModified\": \"2026-04-05T11:00:00+02:00\"\n}"
+            },
+            "url": {
+              "raw": "{{openmrs_fhir_url}}/Task/{{task_uuid}}",
+              "host": ["{{openmrs_fhir_url}}"],
+              "path": ["Task", "{{task_uuid}}"]
+            },
+            "description": "Lab technician accepts the referral task. This is done directly against O3 FHIR API (not through the adaptor) since the lab system talks to O3 directly."
+          }
+        }
+      ]
+    },
+    {
+      "name": "7. Lab Results — Encounter + HbA1c (via Adaptor)",
+      "item": [
+        {
+          "name": "7a. Create Lab Results Encounter",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Lab encounter created via adaptor', function () {",
+                  "    var response = pm.response.json();",
+                  "    var result = response.results[0];",
+                  "    pm.expect(result.status).to.be.oneOf(['created', 'updated']);",
+                  "    pm.expect(result.resourceId).to.not.be.null;",
+                  "    pm.collectionVariables.set('lab_encounter_uuid', result.resourceId);",
+                  "    console.log('Lab Encounter UUID: ' + result.resourceId);",
+                  "    console.log('Route: ' + result.route + ' | HTTP: ' + result.httpStatus);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/fhir+json" },
+              { "key": "X-Source-System", "value": "lab-system" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"resourceType\": \"Encounter\",\n  \"status\": \"finished\",\n  \"class\": {\n    \"system\": \"http://terminology.hl7.org/CodeSystem/v3-ActCode\",\n    \"code\": \"AMB\",\n    \"display\": \"Ambulatory\"\n  },\n  \"type\": [{\n    \"coding\": [{\n      \"system\": \"http://fhir.openmrs.org/code-system/encounter-type\",\n      \"code\": \"3596fafb-6f6f-4396-8c87-6e63a0f1bd71\",\n      \"display\": \"Lab Results\"\n    }]\n  }],\n  \"subject\": {\n    \"reference\": \"Patient/{{patient_uuid}}\",\n    \"display\": \"MUGISHA JEAN PAUL\"\n  },\n  \"period\": {\n    \"start\": \"2026-04-05T14:00:00+02:00\",\n    \"end\": \"2026-04-05T14:30:00+02:00\"\n  },\n  \"location\": [{\n    \"location\": {\n      \"reference\": \"Location/ba685651-ed3b-4e63-9b35-78893060758a\",\n      \"display\": \"Inpatient Ward\"\n    }\n  }],\n  \"participant\": [{\n    \"individual\": {\n      \"reference\": \"Practitioner/92416875-5fe2-4d3b-8531-e2c8c846a69d\",\n      \"display\": \"June Technician\"\n    }\n  }]\n}"
+            },
+            "url": {
+              "raw": "{{adaptor_base_url}}",
+              "host": ["{{adaptor_base_url}}"]
+            },
+            "description": "Lab encounter at Inpatient Ward. Performed by June Technician. Uses 'Lab Results' encounter type. Routed through the adaptor so VisitManager auto-links to an active Visit."
+          }
+        },
+        {
+          "name": "7b. Record HbA1c Result (11.2% — Critical)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('HbA1c observation created via adaptor', function () {",
+                  "    var response = pm.response.json();",
+                  "    var result = response.results[0];",
+                  "    pm.expect(result.status).to.be.oneOf(['created', 'updated']);",
+                  "    pm.expect(result.resourceId).to.not.be.null;",
+                  "    pm.collectionVariables.set('hba1c_obs_uuid', result.resourceId);",
+                  "    console.log('HbA1c Obs UUID: ' + result.resourceId);",
+                  "    console.log('Route: ' + result.route + ' | HTTP: ' + result.httpStatus);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/fhir+json" },
+              { "key": "X-Source-System", "value": "lab-system" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"resourceType\": \"Observation\",\n  \"status\": \"final\",\n  \"category\": [{\n    \"coding\": [{\n      \"system\": \"http://terminology.hl7.org/CodeSystem/observation-category\",\n      \"code\": \"laboratory\",\n      \"display\": \"Laboratory\"\n    }]\n  }],\n  \"code\": {\n    \"coding\": [{\n      \"code\": \"159644AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\n      \"display\": \"Glycosylated hemoglobin A measurement\"\n    }]\n  },\n  \"subject\": {\n    \"reference\": \"Patient/{{patient_uuid}}\"\n  },\n  \"encounter\": {\n    \"reference\": \"Encounter/{{lab_encounter_uuid}}\"\n  },\n  \"effectiveDateTime\": \"2026-04-05T14:15:00+02:00\",\n  \"issued\": \"2026-04-05T14:25:00+02:00\",\n  \"valueQuantity\": {\n    \"value\": 11.2,\n    \"unit\": \"%\",\n    \"system\": \"http://unitsofmeasure.org\",\n    \"code\": \"%\"\n  },\n  \"interpretation\": [{\n    \"coding\": [{\n      \"system\": \"http://terminology.hl7.org/CodeSystem/v3-ObservationInterpretation\",\n      \"code\": \"HH\",\n      \"display\": \"Critical high\"\n    }]\n  }],\n  \"performer\": [{\n    \"reference\": \"Practitioner/92416875-5fe2-4d3b-8531-e2c8c846a69d\",\n    \"display\": \"June Technician\"\n  }]\n}"
+            },
+            "url": {
+              "raw": "{{adaptor_base_url}}",
+              "host": ["{{adaptor_base_url}}"]
+            },
+            "description": "HbA1c = 11.2% (critically elevated, normal < 5.7%). Interpretation: HH (Critical high). Links to the lab encounter. Routed through the adaptor for concept resolution and enrichment."
+          }
+        },
+        {
+          "name": "7c. Create DiagnosticReport",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('DiagnosticReport created via adaptor', function () {",
+                  "    var response = pm.response.json();",
+                  "    var result = response.results[0];",
+                  "    pm.expect(result.status).to.be.oneOf(['created', 'updated']);",
+                  "    pm.expect(result.resourceId).to.not.be.null;",
+                  "    pm.collectionVariables.set('diagnostic_report_uuid', result.resourceId);",
+                  "    console.log('DiagnosticReport UUID: ' + result.resourceId);",
+                  "    console.log('Route: ' + result.route + ' | HTTP: ' + result.httpStatus);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/fhir+json" },
+              { "key": "X-Source-System", "value": "lab-system" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"resourceType\": \"DiagnosticReport\",\n  \"status\": \"final\",\n  \"category\": [{\n    \"coding\": [{\n      \"system\": \"http://terminology.hl7.org/CodeSystem/v2-0074\",\n      \"code\": \"LAB\",\n      \"display\": \"Laboratory\"\n    }]\n  }],\n  \"code\": {\n    \"coding\": [{\n      \"code\": \"159644AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\n      \"display\": \"Glycosylated hemoglobin A measurement\"\n    }],\n    \"text\": \"HbA1c Test Report\"\n  },\n  \"subject\": {\n    \"reference\": \"Patient/{{patient_uuid}}\"\n  },\n  \"encounter\": {\n    \"reference\": \"Encounter/{{lab_encounter_uuid}}\"\n  },\n  \"effectiveDateTime\": \"2026-04-05T14:25:00+02:00\",\n  \"issued\": \"2026-04-05T14:30:00+02:00\",\n  \"result\": [{\n    \"reference\": \"Observation/{{hba1c_obs_uuid}}\",\n    \"display\": \"HbA1c = 11.2%\"\n  }],\n  \"conclusion\": \"HbA1c 11.2% — critically elevated. Confirms uncontrolled Type 2 diabetes. Recommend insulin initiation and dietary counseling.\"\n}"
+            },
+            "url": {
+              "raw": "{{adaptor_base_url}}",
+              "host": ["{{adaptor_base_url}}"]
+            },
+            "description": "DiagnosticReport wrapping the HbA1c observation with clinical conclusion. Routed through the adaptor for enrichment."
+          }
+        }
+      ]
+    },
+    {
+      "name": "8. Complete Task — Link Results (Direct O3 FHIR)",
+      "item": [
+        {
+          "name": "8a. Update Task → completed (with output)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Task completed with outputs', function () {",
+                  "    var task = pm.response.json();",
+                  "    pm.expect(task.status).to.eql('completed');",
+                  "    pm.expect(task.output).to.not.be.undefined;",
+                  "    console.log('Task status: ' + task.status);",
+                  "    task.output.forEach(function(o) {",
+                  "        console.log('  output: ' + o.type.text + ' → ' + o.valueReference.reference);",
+                  "    });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": [
+                { "key": "username", "value": "{{openmrs_user}}" },
+                { "key": "password", "value": "{{openmrs_pass}}" }
+              ]
+            },
+            "method": "PUT",
+            "header": [
+              { "key": "Content-Type", "value": "application/fhir+json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"resourceType\": \"Task\",\n  \"id\": \"{{task_uuid}}\",\n  \"status\": \"completed\",\n  \"intent\": \"order\",\n  \"basedOn\": [{\n    \"reference\": \"ServiceRequest/{{service_request_uuid}}\",\n    \"type\": \"ServiceRequest\"\n  }],\n  \"for\": {\n    \"reference\": \"Patient/{{patient_uuid}}\",\n    \"display\": \"MUGISHA JEAN PAUL\"\n  },\n  \"encounter\": {\n    \"reference\": \"Encounter/{{ncd_encounter_uuid}}\",\n    \"type\": \"Encounter\"\n  },\n  \"owner\": {\n    \"reference\": \"Practitioner/92416875-5fe2-4d3b-8531-e2c8c846a69d\",\n    \"type\": \"Practitioner\",\n    \"display\": \"June Technician\"\n  },\n  \"authoredOn\": \"2026-04-05T10:00:00+02:00\",\n  \"lastModified\": \"2026-04-05T14:30:00+02:00\",\n  \"executionPeriod\": {\n    \"start\": \"2026-04-05T14:00:00+02:00\",\n    \"end\": \"2026-04-05T14:30:00+02:00\"\n  },\n  \"output\": [\n    {\n      \"type\": {\n        \"coding\": [{\"code\": \"159644AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\", \"display\": \"HbA1c Result\"}],\n        \"text\": \"HbA1c Result\"\n      },\n      \"valueReference\": {\n        \"reference\": \"Observation/{{hba1c_obs_uuid}}\",\n        \"display\": \"HbA1c 11.2%\"\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{openmrs_fhir_url}}/Task/{{task_uuid}}",
+              "host": ["{{openmrs_fhir_url}}"],
+              "path": ["Task", "{{task_uuid}}"]
+            },
+            "description": "Lab technician marks the task as completed and attaches output references linking to the DiagnosticReport and HbA1c Observation. This closes the referral loop."
+          }
+        }
+      ]
+    },
+    {
+      "name": "9. Verify — Query Results (NCD Clinician)",
+      "item": [
+        {
+          "name": "9a. Query Task by ServiceRequest",
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": [
+                { "key": "username", "value": "{{openmrs_user}}" },
+                { "key": "password", "value": "{{openmrs_pass}}" }
+              ]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{openmrs_fhir_url}}/Task?based-on=ServiceRequest/{{service_request_uuid}}",
+              "host": ["{{openmrs_fhir_url}}"],
+              "path": ["Task"],
+              "query": [
+                { "key": "based-on", "value": "ServiceRequest/{{service_request_uuid}}" }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Task found and completed', function () {",
+                  "    var json = pm.response.json();",
+                  "    pm.expect(json.total).to.be.above(0);",
+                  "    var task = json.entry[0].resource;",
+                  "    pm.expect(task.status).to.eql('completed');",
+                  "    console.log('Task: ' + task.id + ' | status: ' + task.status);",
+                  "    task.output.forEach(function(o) {",
+                  "        console.log('  → ' + o.type.text + ': ' + o.valueReference.display);",
+                  "    });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "9b. Fetch DiagnosticReport",
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": [
+                { "key": "username", "value": "{{openmrs_user}}" },
+                { "key": "password", "value": "{{openmrs_pass}}" }
+              ]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{openmrs_fhir_url}}/DiagnosticReport/{{diagnostic_report_uuid}}",
+              "host": ["{{openmrs_fhir_url}}"],
+              "path": ["DiagnosticReport", "{{diagnostic_report_uuid}}"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('DiagnosticReport has conclusion', function () {",
+                  "    var dr = pm.response.json();",
+                  "    pm.expect(dr.status).to.eql('final');",
+                  "    pm.expect(dr.conclusion).to.include('11.2%');",
+                  "    console.log('Conclusion: ' + dr.conclusion);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "9c. Fetch HbA1c Observation",
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": [
+                { "key": "username", "value": "{{openmrs_user}}" },
+                { "key": "password", "value": "{{openmrs_pass}}" }
+              ]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{openmrs_fhir_url}}/Observation/{{hba1c_obs_uuid}}",
+              "host": ["{{openmrs_fhir_url}}"],
+              "path": ["Observation", "{{hba1c_obs_uuid}}"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('HbA1c result is 11.2%', function () {",
+                  "    var obs = pm.response.json();",
+                  "    pm.expect(obs.valueQuantity.value).to.eql(11.2);",
+                  "    console.log('HbA1c: ' + obs.valueQuantity.value + obs.valueQuantity.unit);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "9d. All Patient Encounters",
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": [
+                { "key": "username", "value": "{{openmrs_user}}" },
+                { "key": "password", "value": "{{openmrs_pass}}" }
+              ]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{openmrs_fhir_url}}/Encounter?patient={{patient_uuid}}&_sort=-date",
+              "host": ["{{openmrs_fhir_url}}"],
+              "path": ["Encounter"],
+              "query": [
+                { "key": "patient", "value": "{{patient_uuid}}" },
+                { "key": "_sort", "value": "-date" }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Patient has at least 2 encounters', function () {",
+                  "    var json = pm.response.json();",
+                  "    pm.expect(json.total).to.be.at.least(2);",
+                  "    json.entry.forEach(function(e) {",
+                  "        var enc = e.resource;",
+                  "        var type = enc.type[0].coding[0].display;",
+                  "        var loc = enc.location ? enc.location[0].location.display : '?';",
+                  "        console.log('  ' + type + ' @ ' + loc + ' (' + enc.id + ')');",
+                  "    });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "9e. All Patient Conditions",
+          "request": {
+            "auth": {
+              "type": "basic",
+              "basic": [
+                { "key": "username", "value": "{{openmrs_user}}" },
+                { "key": "password", "value": "{{openmrs_pass}}" }
+              ]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{openmrs_fhir_url}}/Condition?patient={{patient_uuid}}",
+              "host": ["{{openmrs_fhir_url}}"],
+              "path": ["Condition"],
+              "query": [
+                { "key": "patient", "value": "{{patient_uuid}}" }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('T2DM condition exists', function () {",
+                  "    var json = pm.response.json();",
+                  "    pm.expect(json.total).to.be.above(0);",
+                  "    json.entry.forEach(function(e) {",
+                  "        var c = e.resource;",
+                  "        console.log('  ' + c.code.text + ' | ' + c.clinicalStatus.coding[0].code);",
+                  "    });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

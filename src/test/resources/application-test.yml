@@ -1,0 +1,29 @@
+# Test profile — minimal config for unit tests
+server:
+  port: 0
+
+# Test profile — security disabled, Basic Auth to OpenMRS
+cce:
+  security:
+    enabled: false
+    username: test-user
+    password: test-pass
+    oauth2:
+      issuer-uri:
+
+openmrs:
+  fhir:
+    base-url: http://localhost:9095/openmrs/ws/fhir2/R4
+    timeout: 5000
+  rest:
+    base-url: http://localhost:9095/openmrs/ws/rest/v1
+    timeout: 5000
+  auth:
+    type: basic
+    username: admin
+    password: Admin123
+  capability-refresh-ms: 999999999
+
+logging:
+  level:
+    org.openphc.cce: DEBUG
