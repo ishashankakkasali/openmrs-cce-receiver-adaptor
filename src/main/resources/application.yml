@@ -29,15 +29,28 @@ openmrs:
   provider:
     fallback-name: ${OPENMRS_PROVIDER_FALLBACK_NAME:SPICE System Provider}
     fallback-identifier: ${OPENMRS_PROVIDER_FALLBACK_IDENTIFIER:SPICE-SYSTEM}
+    # A source practitioner (ServiceRequest.performer Practitioner/<id>) is the OpenMRS provider whose
+    # identifier is <id>, or <prefix><id> when a prefix is set (e.g. SPICE: -> SPICE:1198503150001234;
+    # providers with the bare id still match).
+    external-identifier-prefix: ${OPENMRS_PROVIDER_EXTERNAL_IDENTIFIER_PREFIX:}
+    # Create that provider (person + provider, no user) the first time the practitioner is seen.
+    auto-create-external: ${OPENMRS_PROVIDER_AUTO_CREATE_EXTERNAL:true}
   referral:
-    # When true, inbound SPICE ServiceRequests detected as referrals create:
-    #   - Visit at Outpatient Clinic (OPD type)
-    #   - Encounter of type "Referral In"
-    #   - Referral Order (handled by FhirToRestTransformer)
+    # When true, inbound ServiceRequests detected as referrals create:
+    #   - a closed "Referral Intake" visit (no active visit: the clerk starts the visit when the
+    #     patient arrives, which is the check-in)
+    #   - an Encounter of type "Referral In" in that visit (in the active visit if the patient has one)
+    #   - the Referral Order (handled by FhirToRestTransformer)
     # Set false to fall back to the generic encounter/visit flow for referrals.
     enabled: ${OPENMRS_REFERRAL_ENABLED:true}
+    # Visit type of the closed intake visit (the O3 Orders widget reads order.encounter.visit).
+    # Blank = the visit type named intake-visit-type-name, created (retired, so it stays out of
+    # O3's start-visit picker) if missing.
+    intake-visit-type-uuid: ${OPENMRS_REFERRAL_INTAKE_VISIT_TYPE_UUID:}
+    intake-visit-type-name: ${OPENMRS_REFERRAL_INTAKE_VISIT_TYPE_NAME:Referral Intake}
     location-uuid:        ${OPENMRS_REFERRAL_LOCATION_UUID:44c3efb0-2583-4c80-a79e-1f756a03c0a1}
-    visit-type-uuid:      ${OPENMRS_REFERRAL_VISIT_TYPE_UUID:287463d3-2233-4c69-9851-5841a1f5e109}
+    # Facility the referral visit is held at; blank = nearest "Visit Location" at or above location-uuid
+    visit-location-uuid:  ${OPENMRS_REFERRAL_VISIT_LOCATION_UUID:}
     encounter-type-uuid:  ${OPENMRS_REFERRAL_ENCOUNTER_TYPE_UUID:de0f5558-9813-4fa3-8613-467015f9fabd}
   notification:
     # When true, the adaptor fires a fire-and-forget POST /alert after a

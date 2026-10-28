@@ -10,7 +10,6 @@ import org.openphc.cce.receiver.exception.ResourceTransformException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
@@ -32,23 +31,20 @@ public class FhirToRestTransformer {
     private final RestClient restClient;
     private final PatientProvisioner patientProvisioner;
     private final ObjectMapper objectMapper = new ObjectMapper();
-    private final String fallbackProviderName;
-    private final String fallbackProviderIdentifier;
+    private final ProviderResolver providerResolver;
 
     public FhirToRestTransformer(ConceptResolver conceptResolver,
                                  DiscoveredConfig discoveredConfig,
                                  OpenMrsConfigDiscovery configDiscovery,
                                  @Qualifier("openmrsRestClient") RestClient restClient,
                                  PatientProvisioner patientProvisioner,
-                                 @Value("${openmrs.provider.fallback-name:Unknown Provider}") String fallbackProviderName,
-                                 @Value("${openmrs.provider.fallback-identifier:UNKNOWN}") String fallbackProviderIdentifier) {
+                                 ProviderResolver providerResolver) {
         this.conceptResolver = conceptResolver;
         this.discoveredConfig = discoveredConfig;
         this.configDiscovery = configDiscovery;
         this.restClient = restClient;
         this.patientProvisioner = patientProvisioner;
-        this.fallbackProviderName = fallbackProviderName;
-        this.fallbackProviderIdentifier = fallbackProviderIdentifier;
+        this.providerResolver = providerResolver;
     }
 
     public TransformResult transform(ObjectNode fhirResource, String resourceType) {
@@ -526,7 +522,7 @@ public class FhirToRestTransformer {
         return new TransformResult("/order", rest.toString());
     }
 
-    private String extractAccessionNumber(ObjectNode fhir) {
+    public String extractAccessionNumber(ObjectNode fhir) {
         // Prefer the source FHIR ServiceRequest id (cross-system reference)
         String id = fhir.path("id").asText("");
         if (!id.isBlank() && !isUuid(id)) {
@@ -1236,17 +1232,18 @@ public class FhirToRestTransformer {
     }
 
     private String resolveOrderer(ObjectNode fhir) {
-        // SPICE Gap 2: Check performer[] for Practitioner first
+        // SPICE Gap 2: the practitioner is in performer[], mapped to an OpenMRS provider by identifier
         JsonNode performers = fhir.path("performer");
         if (performers.isArray()) {
             for (JsonNode performer : performers) {
                 String ref = performer.path("reference").asText("");
                 if (ref.startsWith("Practitioner/")) {
                     String id = extractUuidFromReference(ref);
+                    // ReferenceResolver already turned a mapped practitioner into its provider UUID
                     if (id != null && isUuid(id)) return id;
-                    // Not a UUID — search OpenMRS provider by identifier
                     if (id != null) {
-                        String providerUuid = searchProviderByIdentifier(id);
+                        String providerUuid = providerResolver.findOrCreateExternal(
+                                id, performer.path("display").asText(null));
                         if (providerUuid != null) return providerUuid;
                     }
                 }
@@ -1260,91 +1257,9 @@ public class FhirToRestTransformer {
             if (id != null && isUuid(id)) return id;
         }
 
-        // Final fallback: configurable provider
-        log.warn("No Practitioner resolved for order — falling back to '{}'", fallbackProviderName);
-        return findOrCreateFallbackProvider();
-    }
-
-    private String searchProviderByIdentifier(String identifier) {
-        try {
-            String response = restClient.get()
-                    .uri("/provider?q={id}&v=default", identifier)
-                    .retrieve()
-                    .body(String.class);
-            JsonNode results = objectMapper.readTree(response).path("results");
-            if (results.isArray() && !results.isEmpty()) {
-                String uuid = results.get(0).path("uuid").asText(null);
-                log.info("Resolved provider identifier '{}' to UUID: {}", identifier, uuid);
-                return uuid;
-            }
-        } catch (Exception e) {
-            log.warn("Failed to search provider by identifier '{}': {}", identifier, e.getMessage());
-        }
-        return null;
-    }
-
-    private String findOrCreateFallbackProvider() {
-        try {
-            // Search for existing fallback provider
-            String response = restClient.get()
-                    .uri("/provider?q={name}&v=default", fallbackProviderName)
-                    .retrieve()
-                    .body(String.class);
-
-            JsonNode root = objectMapper.readTree(response);
-            JsonNode results = root.path("results");
-            if (results.isArray() && !results.isEmpty()) {
-                for (JsonNode result : results) {
-                    String display = result.path("display").asText("");
-                    // OpenMRS display format: "IDENTIFIER - Name"
-                    if (display.equalsIgnoreCase(fallbackProviderName)
-                            || display.toLowerCase().endsWith("- " + fallbackProviderName.toLowerCase())) {
-                        return result.path("uuid").asText(null);
-                    }
-                }
-            }
-
-            // Create fallback provider: first create a Person, then link as Provider
-            // Step 1: Create Person
-            ObjectNode personPayload = objectMapper.createObjectNode();
-            ObjectNode personName = objectMapper.createObjectNode();
-            personName.put("givenName", fallbackProviderName);
-            personName.put("familyName", fallbackProviderIdentifier);
-            personPayload.putArray("names").add(personName);
-            personPayload.put("gender", "M");
-
-            response = restClient.post()
-                    .uri("/person")
-                    .body(personPayload.toString())
-                    .retrieve()
-                    .body(String.class);
-
-            root = objectMapper.readTree(response);
-            String personUuid = root.path("uuid").asText(null);
-            if (personUuid == null) {
-                log.error("Failed to create person for fallback provider '{}'", fallbackProviderName);
-                return null;
-            }
-
-            // Step 2: Create Provider linked to the Person
-            ObjectNode providerPayload = objectMapper.createObjectNode();
-            providerPayload.put("identifier", fallbackProviderIdentifier);
-            providerPayload.put("person", personUuid);
-
-            response = restClient.post()
-                    .uri("/provider")
-                    .body(providerPayload.toString())
-                    .retrieve()
-                    .body(String.class);
-
-            root = objectMapper.readTree(response);
-            String uuid = root.path("uuid").asText(null);
-            log.info("Created fallback provider '{}' in OpenMRS: {}", fallbackProviderName, uuid);
-            return uuid;
-        } catch (Exception e) {
-            log.error("Failed to find or create fallback provider '{}': {}", fallbackProviderName, e.getMessage());
-            return null;
-        }
+        // Final fallback: configurable system provider
+        log.warn("No Practitioner resolved for order — falling back to the system provider");
+        return providerResolver.findOrCreateFallback();
     }
 
     private String mapAllergyCategory(String fhirCategory) {

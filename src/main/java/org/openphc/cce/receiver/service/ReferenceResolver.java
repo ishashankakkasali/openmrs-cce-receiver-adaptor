@@ -17,6 +17,7 @@ public class ReferenceResolver {
 
     private static final Logger log = LoggerFactory.getLogger(ReferenceResolver.class);
     private final RestClient restClient;
+    private final ProviderResolver providerResolver;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     private static final String UUID_PATTERN = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
@@ -32,8 +33,10 @@ public class ReferenceResolver {
             Map.entry("Condition", "/condition")
     );
 
-    public ReferenceResolver(@Qualifier("openmrsRestClient") RestClient restClient) {
+    public ReferenceResolver(@Qualifier("openmrsRestClient") RestClient restClient,
+                             ProviderResolver providerResolver) {
         this.restClient = restClient;
+        this.providerResolver = providerResolver;
     }
 
     public ObjectNode resolveReferences(ObjectNode resourceNode, SourceIdMappingStore mappingStore) {
@@ -121,6 +124,12 @@ public class ReferenceResolver {
     }
 
     private String searchForReference(String resourceType, String identifier) {
+        // Practitioners map to providers by exact identifier only — a partial "q=" hit would make an
+        // unrelated provider the orderer
+        if ("Practitioner".equals(resourceType)) {
+            return providerResolver.findExternal(identifier);
+        }
+
         String endpoint = RESOURCE_TYPE_TO_ENDPOINT.getOrDefault(resourceType, "/" + resourceType.toLowerCase());
 
         try {

@@ -64,7 +64,8 @@ These UUIDs are **fixed** for this reference instance — copy/paste freely.
 | UUID | What it is |
 |---|---|
 | `44c3efb0-2583-4c80-a79e-1f756a03c0a1` | **Outpatient Clinic** location (where the referral lands) |
-| `287463d3-2233-4c69-9851-5841a1f5e109` | **OPD** Visit Type |
+| `287463d3-2233-4c69-9851-5841a1f5e109` | **OPD** Visit Type (started by the clerk when the patient arrives) |
+| *discovered by name* | **Referral Intake** Visit Type — retired; the receiver files the referral in a closed visit of this type (created if missing) |
 
 ### Encounter Types
 
@@ -137,6 +138,11 @@ Adaptor receives                 Step 4: POST /encounter                Visit ap
                                   ├─ creates Referral In Encounter       Order appears (status=Received)
                                   ├─ creates Referral Order
                                   └─ returns encounter UUID
+
+                                 Step 4b: POST /alert                   Bell icon + top-right toast
+                                  (fire-and-forget)                      pop in O3 for resolved
+                                  └─ ResourceRouter.fireReferral…       recipients (default: admin
+                                                                          static UUID)
 
                                  Step 5 (manual / OpenMRS UI):          Patient appears in
                                   POST /queue-entry                      Service Queues / Waiting
@@ -451,7 +457,7 @@ After all 9 steps complete, this patient/visit owns:
 
 | Artifact | Count | Type |
 |---|---|---|
-| Visit | 1 | OPD, ended |
+| Visit | 2 | Referral Intake (closed when the referral arrived), OPD (started on arrival, ended) |
 | Encounter | 4–5 | Referral In, Vitals, Visit Note, Consultation (response) |
 | Obs | 8–15 | Vitals + diagnoses + response answers |
 | Diagnosis | 1–2 | Final dx |

@@ -23,8 +23,11 @@ public class VisitManager {
     private static final DateTimeFormatter OPENMRS_DATE_FORMAT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSZ");
 
-    /** Per-request cache key prefix used to distinguish referral OPD visits from generic visits. */
-    static final String REFERRAL_CACHE_PREFIX = "referral:";
+    private static final String VISIT_LOCATION_TAG = "Visit Location";
+
+    /** Visit location derived from the referral department; locations do not move, so cached. */
+    private volatile String resolvedVisitLocationUuid;
+    private volatile String resolvedIntakeVisitTypeUuid;
 
     private final RestClient restClient;
     private final DiscoveredConfig discoveredConfig;
@@ -193,6 +196,11 @@ public class VisitManager {
         }
     }
 
+    /** Resolves (or provisions) the OpenMRS patient UUID the resource's subject refers to. */
+    public String resolvePatientUuid(ObjectNode node) {
+        return extractPatientUuid(node);
+    }
+
     private String extractPatientUuid(ObjectNode node) {
         // Phase 1: collect candidate identifiers and run lookup-only resolution.
         String refCandidate = null;
@@ -255,23 +263,17 @@ public class VisitManager {
     // ------------------------------------------------------------------
 
     /**
-     * Visit + Encounter creation tailored for SPICE referrals.
-     * <ul>
-     *   <li>Visit at the configured Outpatient Clinic location with the OPD visit type</li>
-     *   <li>Encounter of type "Referral In" linked to that visit</li>
-     * </ul>
-     * Returns the new (or reused) encounter UUID, or {@code null} if creation
-     * failed (in which case the caller should fall back to the generic flow
-     * to avoid losing the order entirely).
+     * Encounter creation for referrals: a "Referral In" encounter filed in an already-closed
+     * intake visit, so the patient has no active visit until they arrive — the clerk starting the
+     * visit is the check-in, not the delivery of the referral. If the patient already has an
+     * active visit (an intake visit would overlap it), the encounter goes into that visit.
+     * Returns the encounter UUID, or {@code null} if creation failed (in which case the caller
+     * should fall back to the generic flow to avoid losing the order entirely).
      */
-    public String ensureReferralEncounterForOrder(ObjectNode orderNode,
-                                                  Map<String, String> perRequestVisitCache) {
+    public String ensureReferralEncounterForOrder(ObjectNode orderNode) {
         // NOTE: unlike the generic ensureEncounterForOrder, the referral flow
         // ALWAYS creates a fresh "Referral In" encounter — even when the inbound
-        // ServiceRequest already carries an encounter reference. The runbook
-        // mandates that a referred patient gets a brand-new Referral In
-        // encounter linked to the OPD visit (so the order can be reconciled
-        // and surfaced on the triage queue).
+        // ServiceRequest already carries an encounter reference.
 
         String patientUuid = extractPatientUuid(orderNode);
         if (patientUuid == null) {
@@ -279,124 +281,180 @@ public class VisitManager {
             return null;
         }
 
-        String referralVisitTypeUuid = referralProperties.getVisitTypeUuid();
         String referralLocationUuid = referralProperties.getLocationUuid();
         String referralEncounterTypeUuid = referralProperties.getEncounterTypeUuid();
 
-        if (isBlank(referralVisitTypeUuid) || isBlank(referralLocationUuid)
-                || isBlank(referralEncounterTypeUuid)) {
-            log.warn("Referral flow enabled but visit-type/location/encounter-type UUID missing — "
+        if (isBlank(referralLocationUuid) || isBlank(referralEncounterTypeUuid)) {
+            log.warn("Referral flow enabled but location/encounter-type UUID missing — "
                     + "falling back to generic encounter for patient {}", patientUuid);
             return null;
         }
 
-        // Per-request cache (referral-scoped) to share visit across resources in a Bundle
-        String cacheKey = REFERRAL_CACHE_PREFIX + patientUuid;
-        String visitUuid = perRequestVisitCache.get(cacheKey);
+        // In the past so neither the encounter nor the visit's stop (when + 1s) is in the future
+        ZonedDateTime when = ZonedDateTime.now().withNano(0).minusSeconds(2);
+        String visitUuid = createIntakeVisit(patientUuid, resolveVisitLocation(referralLocationUuid), when);
         if (visitUuid == null) {
-            visitUuid = findOrCreateReferralVisit(patientUuid, orderNode,
-                    referralVisitTypeUuid, referralLocationUuid);
-            if (visitUuid != null) {
-                perRequestVisitCache.put(cacheKey, visitUuid);
-            }
+            visitUuid = findActiveVisit(patientUuid);
         }
-
-        if (visitUuid == null) {
-            log.warn("Referral visit creation failed for patient {} — falling back", patientUuid);
-            return null;
-        }
-
         return createReferralEncounter(patientUuid, visitUuid,
-                referralEncounterTypeUuid, referralLocationUuid);
+                referralEncounterTypeUuid, referralLocationUuid, when);
     }
 
-    private String findOrCreateReferralVisit(String patientUuid, ObjectNode resourceNode,
-                                             String referralVisitTypeUuid,
-                                             String referralLocationUuid) {
-        String firstActiveVisitUuid = null;
-
-        // Reuse an existing active visit ONLY if it is the same OPD type at the same location
+    /**
+     * Creates an already-closed visit of the intake visit type holding the referral. Returns
+     * {@code null} if there is no intake visit type or creation fails (typically: it would overlap
+     * the patient's active visit).
+     */
+    private String createIntakeVisit(String patientUuid, String locationUuid, ZonedDateTime when) {
+        String intakeVisitTypeUuid = resolveIntakeVisitTypeUuid();
+        if (isBlank(intakeVisitTypeUuid)) return null;
         try {
-            String response = restClient.get()
-                    .uri("/visit?patient={uuid}&includeInactive=false&v=full", patientUuid)
-                    .retrieve()
-                    .body(String.class);
-
-            JsonNode root = objectMapper.readTree(response);
-            JsonNode results = root.path("results");
-            if (results.isArray()) {
-                for (JsonNode visit : results) {
-                    String vt = visit.path("visitType").path("uuid").asText("");
-                    String loc = visit.path("location").path("uuid").asText("");
-                    String uuid = visit.path("uuid").asText(null);
-                    if (firstActiveVisitUuid == null && uuid != null) {
-                        firstActiveVisitUuid = uuid;
-                    }
-                    if (referralVisitTypeUuid.equals(vt) && referralLocationUuid.equals(loc)) {
-                        log.debug("Reusing active referral visit for patient {}: {}", patientUuid, uuid);
-                        return uuid;
-                    }
-                }
-            }
-        } catch (Exception e) {
-            log.warn("Failed to search referral visits for patient {}: {}", patientUuid, e.getMessage());
-        }
-
-        String created = createReferralVisit(patientUuid, resourceNode, referralVisitTypeUuid, referralLocationUuid);
-        if (created != null) {
-            return created;
-        }
-
-        // OpenMRS only allows one active visit per patient. If creation failed
-        // (most commonly because another active visit already exists), reuse it
-        // so we can still attach the Referral In encounter and order.
-        if (firstActiveVisitUuid != null) {
-            log.info("Referral visit creation failed for patient {} — reusing existing active visit {}",
-                    patientUuid, firstActiveVisitUuid);
-        }
-        return firstActiveVisitUuid;
-    }
-
-    private String createReferralVisit(String patientUuid, ObjectNode resourceNode,
-                                       String referralVisitTypeUuid, String referralLocationUuid) {
-        try {
-            String startDatetime = extractStartDatetime(resourceNode);
-
             ObjectNode visitPayload = objectMapper.createObjectNode();
             visitPayload.put("patient", patientUuid);
-            visitPayload.put("visitType", referralVisitTypeUuid);
-            visitPayload.put("location", referralLocationUuid);
-            visitPayload.put("startDatetime", startDatetime);
+            visitPayload.put("visitType", intakeVisitTypeUuid);
+            visitPayload.put("location", locationUuid);
+            visitPayload.put("startDatetime", when.format(OPENMRS_DATE_FORMAT));
+            visitPayload.put("stopDatetime", when.plusSeconds(1).format(OPENMRS_DATE_FORMAT));
 
             String response = restClient.post()
                     .uri("/visit")
                     .body(visitPayload.toString())
                     .retrieve()
                     .body(String.class);
-
-            JsonNode root = objectMapper.readTree(response);
-            String uuid = root.path("uuid").asText(null);
-            log.info("Created referral Visit (OPD/Outpatient Clinic) for patient {}: {}",
-                    patientUuid, uuid);
+            String uuid = objectMapper.readTree(response).path("uuid").asText(null);
+            log.info("Created closed Referral Intake visit for patient {}: {}", patientUuid, uuid);
             return uuid;
         } catch (Exception e) {
-            log.error("Failed to create referral Visit for patient {}: {}",
+            log.info("No Referral Intake visit for patient {} ({}) — using the active visit if any",
                     patientUuid, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * The facility a referral visit is held at: the configured visit location, else the nearest
+     * location at or above the referral department tagged "Visit Location" — what O3 itself uses
+     * when a visit is started from the department (the encounter stays at the department).
+     */
+    private String resolveVisitLocation(String departmentUuid) {
+        if (!isBlank(referralProperties.getVisitLocationUuid())) {
+            return referralProperties.getVisitLocationUuid();
+        }
+        String cached = resolvedVisitLocationUuid;
+        if (cached != null) return cached;
+
+        String current = departmentUuid;
+        try {
+            for (int depth = 0; current != null && depth < 10; depth++) {
+                JsonNode location = objectMapper.readTree(restClient.get()
+                        .uri("/location/{uuid}?v=custom:(uuid,tags:(display),parentLocation:(uuid))", current)
+                        .retrieve()
+                        .body(String.class));
+                for (JsonNode tag : location.path("tags")) {
+                    if (VISIT_LOCATION_TAG.equalsIgnoreCase(tag.path("display").asText())) {
+                        resolvedVisitLocationUuid = current;
+                        log.info("Referral visits are held at visit location {} (department {})", current, departmentUuid);
+                        return current;
+                    }
+                }
+                current = location.path("parentLocation").path("uuid").asText(null);
+            }
+        } catch (Exception e) {
+            log.warn("Failed to resolve the visit location of {}: {}", departmentUuid, e.getMessage());
+            return departmentUuid;
+        }
+        log.warn("No \"{}\"-tagged location at or above {} — holding referral visits there", VISIT_LOCATION_TAG, departmentUuid);
+        resolvedVisitLocationUuid = departmentUuid;
+        return departmentUuid;
+    }
+
+    private String findActiveVisit(String patientUuid) {
+        try {
+            String response = restClient.get()
+                    .uri("/visit?patient={uuid}&includeInactive=false&v=custom:(uuid)", patientUuid)
+                    .retrieve()
+                    .body(String.class);
+            JsonNode results = objectMapper.readTree(response).path("results");
+            if (results.isArray() && !results.isEmpty()) {
+                return results.get(0).path("uuid").asText(null);
+            }
+        } catch (Exception e) {
+            log.warn("Failed to search active visits for patient {}: {}", patientUuid, e.getMessage());
+        }
+        return null;
+    }
+
+    /**
+     * The configured intake visit type, else the visit type named {@code intake-visit-type-name}
+     * (retired ones included), created when missing. Cached: visit types do not change.
+     */
+    private String resolveIntakeVisitTypeUuid() {
+        if (!isBlank(referralProperties.getIntakeVisitTypeUuid())) {
+            return referralProperties.getIntakeVisitTypeUuid();
+        }
+        String cached = resolvedIntakeVisitTypeUuid;
+        if (cached != null) return cached;
+
+        String name = referralProperties.getIntakeVisitTypeName();
+        try {
+            // includeAll: the type is retired so that it stays out of O3's start-visit picker
+            JsonNode results = objectMapper.readTree(restClient.get()
+                    .uri("/visittype?includeAll=true&v=custom:(uuid,name)")
+                    .retrieve()
+                    .body(String.class)).path("results");
+            for (JsonNode visitType : results) {
+                if (name.equalsIgnoreCase(visitType.path("name").asText(""))) {
+                    resolvedIntakeVisitTypeUuid = visitType.path("uuid").asText(null);
+                    log.info("Discovered '{}' visit type: {}", name, resolvedIntakeVisitTypeUuid);
+                    return resolvedIntakeVisitTypeUuid;
+                }
+            }
+            resolvedIntakeVisitTypeUuid = createIntakeVisitType(name);
+            return resolvedIntakeVisitTypeUuid;
+        } catch (Exception e) {
+            log.warn("Failed to discover the '{}' visit type: {}", name, e.getMessage());
+            return null;
+        }
+    }
+
+    /** Creates the intake visit type, retired: clerks never start a visit of this type. */
+    private String createIntakeVisitType(String name) {
+        try {
+            ObjectNode payload = objectMapper.createObjectNode();
+            payload.put("name", name);
+            payload.put("description", "Closed visit a referral from another facility is filed in when it arrives");
+            String uuid = objectMapper.readTree(restClient.post()
+                    .uri("/visittype")
+                    .body(payload.toString())
+                    .retrieve()
+                    .body(String.class)).path("uuid").asText(null);
+            if (uuid == null) return null;
+
+            restClient.delete()
+                    .uri("/visittype/{uuid}?reason={reason}", uuid,
+                            "Receiver-only visit type; hidden from start-visit picker")
+                    .retrieve()
+                    .toBodilessEntity();
+            log.info("Auto-created retired '{}' visit type: {}", name, uuid);
+            return uuid;
+        } catch (Exception e) {
+            log.warn("Failed to auto-create the '{}' visit type: {}", name, e.getMessage());
             return null;
         }
     }
 
     private String createReferralEncounter(String patientUuid, String visitUuid,
                                            String referralEncounterTypeUuid,
-                                           String referralLocationUuid) {
+                                           String referralLocationUuid,
+                                           ZonedDateTime when) {
         try {
-            String when = ZonedDateTime.now().format(OPENMRS_DATE_FORMAT);
-
             ObjectNode encounterPayload = objectMapper.createObjectNode();
             encounterPayload.put("patient", patientUuid);
-            encounterPayload.put("encounterDatetime", when);
+            encounterPayload.put("encounterDatetime", when.format(OPENMRS_DATE_FORMAT));
             encounterPayload.put("encounterType", referralEncounterTypeUuid);
-            encounterPayload.put("visit", visitUuid);
+            if (visitUuid != null) {
+                encounterPayload.put("visit", visitUuid);
+            }
             encounterPayload.put("location", referralLocationUuid);
 
             String response = restClient.post()
@@ -408,7 +466,7 @@ public class VisitManager {
             JsonNode root = objectMapper.readTree(response);
             String uuid = root.path("uuid").asText(null);
             log.info("Created Referral In encounter {} for patient {} on visit {}",
-                    uuid, patientUuid, visitUuid);
+                    uuid, patientUuid, visitUuid != null ? visitUuid : "<none>");
             return uuid;
         } catch (Exception e) {
             log.error("Failed to create Referral In encounter for patient {}: {}",

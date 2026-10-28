@@ -130,7 +130,18 @@ public class ResourceRouter {
             if ("ServiceRequest".equals(resourceType)
                     && referralProperties.isEnabled()
                     && fhirToRestTransformer.isReferral(resourceNode)) {
-                encounterUuid = visitManager.ensureReferralEncounterForOrder(resourceNode, perRequestVisitCache);
+                // A redelivered referral (intelligence retries, replays) must not create a second
+                // Referral In encounter and order: the accession number is the source SR id.
+                String accessionNumber = fhirToRestTransformer.extractAccessionNumber(resourceNode);
+                String patientUuid = visitManager.resolvePatientUuid(resourceNode);
+                if (accessionNumber != null && patientUuid != null) {
+                    String existingOrder = openMrsRestClient.findOrderByAccessionNumber(patientUuid, accessionNumber);
+                    if (existingOrder != null) {
+                        log.info("Referral {} already exists as order {} — skipping", accessionNumber, existingOrder);
+                        return RoutingResult.duplicate(resourceType, existingOrder, "REST:/order");
+                    }
+                }
+                encounterUuid = visitManager.ensureReferralEncounterForOrder(resourceNode);
                 if (encounterUuid != null) {
                     log.debug("ServiceRequest routed via referral flow (encounter={})", encounterUuid);
                 } else {

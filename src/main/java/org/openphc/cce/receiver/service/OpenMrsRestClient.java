@@ -100,6 +100,32 @@ public class OpenMrsRestClient {
         }
     }
 
+    /**
+     * Returns the UUID of a non-voided order of the patient carrying {@code accessionNumber},
+     * or {@code null} if there is none (or the search fails — the caller then creates the order).
+     */
+    public String findOrderByAccessionNumber(String patientUuid, String accessionNumber) {
+        try {
+            String response = restClient.get()
+                    .uri("/order?patient={uuid}&v=custom:(uuid,accessionNumber,voided)", patientUuid)
+                    .retrieve()
+                    .body(String.class);
+
+            JsonNode results = objectMapper.readTree(response).path("results");
+            if (results.isArray()) {
+                for (JsonNode order : results) {
+                    if (accessionNumber.equals(order.path("accessionNumber").asText(null))
+                            && !order.path("voided").asBoolean(false)) {
+                        return order.path("uuid").asText(null);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Order search by accession number failed for patient {}: {}", patientUuid, e.getMessage());
+        }
+        return null;
+    }
+
     public String searchByIdentifier(String endpoint, String identifier) {
         try {
             String response = restClient.get()
